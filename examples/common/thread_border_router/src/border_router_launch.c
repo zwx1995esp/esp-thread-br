@@ -36,6 +36,8 @@
 #include "openthread/platform/radio.h"
 #include "openthread/tasklet.h"
 #include "openthread/thread_ftd.h"
+#include "esp_timer.h"
+#include "esp_random.h"
 
 #define TAG "esp_ot_br"
 #define RCP_VERSION_MAX_SIZE 100
@@ -76,6 +78,23 @@ static void try_update_ot_rcp(const esp_openthread_platform_config_t *config)
 }
 #endif // CONFIG_OPENTHREAD_BR_AUTO_UPDATE_RCP
 
+static void ot_test_worker(void *ctx)
+{
+    uint8_t i = 0;
+    while (1) {
+        extern void test_nvs_write(uint8_t i);
+        for (int b = 0; b < 20; b++) {
+            test_nvs_write(i);
+            i = (i + 1) % 20;
+        }
+        vTaskDelay(5);
+    }
+}
+static void oneshot_timer_callback(void* arg)
+{
+    otInstanceFactoryReset(esp_openthread_get_instance()); 
+}
+
 static void rcp_failure_handler(void)
 {
 #if CONFIG_OPENTHREAD_BR_AUTO_UPDATE_RCP
@@ -85,6 +104,7 @@ static void rcp_failure_handler(void)
     esp_rcp_reset();
 }
 
+bool test_flag = false;
 static void ot_task_worker(void *ctx)
 {
     esp_netif_config_t cfg = ESP_NETIF_DEFAULT_OPENTHREAD();
@@ -114,7 +134,23 @@ static void ot_task_worker(void *ctx)
     ESP_ERROR_CHECK(esp_openthread_auto_start((error == OT_ERROR_NONE) ? &dataset : NULL));
 #endif // CONFIG_OPENTHREAD_BR_AUTO_START
     esp_openthread_lock_release();
-
+    xTaskCreate(ot_test_worker, "ot_test", 6144, xTaskGetCurrentTaskHandle(), 5, NULL);
+    const esp_timer_create_args_t oneshot_timer_args = {
+        .callback = &oneshot_timer_callback,
+        /* argument specified here will be passed to timer callback function */
+        .name = "one-shot"
+    };
+    esp_timer_handle_t oneshot_timer;
+    ESP_ERROR_CHECK(esp_timer_create(&oneshot_timer_args, &oneshot_timer));
+    uint8_t test[3];
+    esp_fill_random(test, 3);
+    uint32_t random_time = 1;
+    random_time = (random_time << 2) + (test[2]%4);
+    random_time = (random_time << 8) + test[0];
+    random_time = (random_time << 8) + test[1];
+    test_flag = true;
+    printf("random timer start: %ld\n", random_time);
+    esp_timer_start_once(oneshot_timer, random_time);
     // Run the main loop
     esp_openthread_cli_create_task();
     esp_openthread_launch_mainloop();
